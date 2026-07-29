@@ -110,7 +110,12 @@ locals {
 # connaissant son ARN.
 data "aws_iam_policy_document" "github_actions_assume_role" {
   statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    # sts:TagSession en plus de AssumeRoleWithWebIdentity : depuis la v2,
+    # aws-actions/configure-aws-credentials tague la session STS par défaut
+    # (aws-region, github-actor...) pour l'audit. Sans ce droit sur le même
+    # principal, l'action échoue en AccessDenied sur sts:TagSession avant
+    # même d'obtenir des credentials.
+    actions = ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"]
 
     principals {
       type        = "Federated"

@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write # requis pour l'authentification OIDC vers AWS (job build-and-push)
   contents: read
 
 env:
@@ -61,15 +60,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Pas de clé d'accès AWS en secret : le job assume un rôle IAM via un
+      # Authentification AWS via un utilisateur IAM dédié au pipeline.
+      # Les credentials sont stockés dans les secrets GitHub Actions.
+      # Cette solution remplace temporairement OIDC qui n'a pas fonctionné
+      # dans cet environnement.
       # jeton OIDC signé par GitHub, valable seulement pour ce dépôt/branche
       # (voir la condition sub dans infra/iam.tf).
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Login to ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
