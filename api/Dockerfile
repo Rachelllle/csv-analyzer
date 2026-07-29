@@ -1,4 +1,8 @@
 # syntax=docker/dockerfile:1
+#
+# Contexte de build : la racine du repo (pas ./api), pour pouvoir COPY
+# frontend/ en plus du code api/. Build avec :
+#   docker build -f api/Dockerfile -t csv-analyzer-api .
 
 FROM python:3.11-slim AS builder
 
@@ -7,7 +11,7 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY api/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 FROM python:3.11-slim AS runtime
@@ -20,7 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq5 curl \
 WORKDIR /app
 
 COPY --from=builder /root/.local /home/appuser/.local
-COPY --chown=appuser:appuser . .
+COPY --chown=appuser:appuser api/ .
+# Frontend statique intégré à l'image : le conteneur redevient immuable
+# (un déploiement = une image = un frontend), plus de montage volume ni de
+# copie séparée par le pipeline.
+COPY --chown=appuser:appuser frontend/ ./frontend/
 
 RUN mkdir -p /data/uploads && chown -R appuser:appuser /data/uploads
 

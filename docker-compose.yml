@@ -24,7 +24,9 @@ services:
       retries: 10
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     restart: unless-stopped
     env_file: .env
     environment:
@@ -34,7 +36,6 @@ services:
       - "8000:8000"
     volumes:
       - uploads:/data/uploads
-      - ./frontend:/app/frontend:ro
     depends_on:
       postgres:
         condition: service_healthy

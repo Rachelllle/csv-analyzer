@@ -1,0 +1,129 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # requis pour l'authentification OIDC vers AWS (job build-and-push)
+  contents: read
+
+env:
+  AWS_REGION: eu-west-3
+  ECR_API_REPO: csv-analyzer-api
+  ECR_WORKER_REPO: csv-analyzer-worker
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt -r api/requirements.txt -r worker/requirements.txt
+
+      - name: Lint (ruff)
+        run: ruff check api/ worker/
+
+      - name: Tests (pytest)
+        run: pytest -v
+
+  # Analyse statique de sécurité de l'infra Terraform. Non bloquant
+  # (continue-on-error + soft_fail) : c'est un rapport à lire, pas une porte
+  # au même titre que les tests applicatifs — un budget étudiant assume déjà
+  # des compromis (pas de NAT, single-AZ...) documentés dans infra/, on ne
+  # veut pas qu'un finding attendu casse le pipeline.
+  tfsec:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra
+          soft_fail: true
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pas de clé d'accès AWS en secret : le job assume un rôle IAM via un
+      # jeton OIDC signé par GitHub, valable seulement pour ce dépôt/branche
+      # (voir la condition sub dans infra/iam.tf).
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Contexte de build = racine du repo (pas ./api) : le Dockerfile y
+      # copie aussi frontend/ pour que l'image soit auto-suffisante (voir
+      # api/Dockerfile).
+      - name: Build and push api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./api/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_API_REPO }}:latest
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WORKER_REPO }}:${{ github.sha }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_WORKER_REPO }}:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      # Déploiement par SSH direct sur l'unique EC2 : pas d'orchestrateur
+      # (ECS/Fargate) dans ce budget, docker compose fait le travail.
+      # docker-compose.yml sur l'instance référence toujours le tag "latest"
+      # (voir infra/templates/user_data.sh.tftpl) ; comme l'étape précédente
+      # vient de le republier, un simple `pull` récupère la nouvelle image.
+      # Le tag au SHA du commit reste poussé sur ECR pour la traçabilité et
+      # un éventuel rollback manuel.
+      #
+      # Pas de credentials AWS dans ce job : l'instance s'authentifie sur
+      # ECR avec son propre rôle IAM (voir infra/iam.tf), le login ci-dessous
+      # tourne donc directement sur l'EC2 via SSH, avec un jeton toujours
+      # frais (les jetons ECR expirent au bout de 12h).
+      - name: Deploy via SSH (docker compose pull && up -d)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euxo pipefail
+            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+              | sudo docker login --username AWS --password-stdin "$ACCOUNT_ID.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+            cd /opt/csv-analyzer
+            sudo docker compose pull
+            sudo docker compose up -d
+            sudo docker image prune -f

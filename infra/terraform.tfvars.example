@@ -1,0 +1,20 @@
+# Copier en terraform.tfvars et renseigner. Ne jamais committer terraform.tfvars
+# (il peut contenir des infos sensibles indirectement, ex: ton IP publique).
+
+aws_region  = "eu-west-1"
+project_name = "csv-analyzer"
+environment  = "prod"
+
+# Ton IP publique en CIDR (ex: "1.2.3.4/32"). Trouvable avec `curl ifconfig.me`.
+my_ip = "0.0.0.0/32"
+
+# Contenu de ta clé publique SSH, ex: $(cat ~/.ssh/id_ed25519.pub)
+ssh_public_key = "ssh-ed25519 AAAA... toi@ta-machine"
+
+# Dépôt GitHub autorisé à déployer via OIDC (owner/repo)
+github_repository = "Rachelllle/csv-analyzer"
+
+# À passer à false si un autre projet du compte AWS a déjà créé le
+# fournisseur OIDC GitHub Actions (un seul par compte) ; renseigner alors
+# existing_github_oidc_provider_arn.
+# create_github_oidc_provider = true

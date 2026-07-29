@@ -1,0 +1,8 @@
+# Règles par défaut de ruff (E4, E7, E9, F), figées explicitement : sans ce
+# fichier, ruff peut résoudre des règles différentes selon la config globale
+# de la machine qui l'exécute, ce qui rendrait le job CI "test" non
+# reproductible entre postes de dev et runner GitHub Actions.
+target-version = "py311"
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

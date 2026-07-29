@@ -1,0 +1,63 @@
+# Déployé sur l'EC2 dans /opt/csv-analyzer, aux côtés de .env (voir README).
+# Pas de service "postgres" ici : la base est RDS, hors de ce compose.
+# "redis" reste local au conteneur (file d'attente RQ, pas de persistance
+# nécessaire) : le garder en conteneur plutôt que sur un service managé
+# (ElastiCache) reste cohérent avec le budget étudiant du reste de l'infra.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: eu-west-3
+        awslogs-group: /csv-analyzer/prod
+        awslogs-stream: redis
+
+  api:
+    image: 108726526559.dkr.ecr.eu-west-3.amazonaws.com/csv-analyzer-api:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "80:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: eu-west-3
+        awslogs-group: /csv-analyzer/prod
+        awslogs-stream: api
+
+  worker:
+    image: 108726526559.dkr.ecr.eu-west-3.amazonaws.com/csv-analyzer-worker:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: eu-west-3
+        awslogs-group: /csv-analyzer/prod
+        awslogs-stream: worker

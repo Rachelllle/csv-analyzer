@@ -1,0 +1,107 @@
+#!/bin/bash
+set -euxo pipefail
+
+# --- Docker + plugin compose ---
+dnf update -y
+dnf install -y docker
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+DOCKER_COMPOSE_VERSION="v2.29.7"
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -SL "https://github.com/docker/compose/releases/download/$${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# --- Authentification ECR : le rôle d'instance porte les droits de pull ---
+aws ecr get-login-password --region ${region} \
+  | docker login --username AWS --password-stdin ${account_id}.dkr.ecr.${region}.amazonaws.com
+
+# --- Mot de passe DB lu depuis SSM Parameter Store au démarrage, jamais
+# écrit en clair dans ce script (qui reste visible via les métadonnées EC2) ---
+DB_PASSWORD=$(aws ssm get-parameter --name "${ssm_param_name}" --with-decryption \
+  --query "Parameter.Value" --output text --region ${region})
+
+mkdir -p /opt/csv-analyzer
+cat > /opt/csv-analyzer/.env <<EOF
+POSTGRES_DB=${db_name}
+POSTGRES_USER=${db_username}
+POSTGRES_PASSWORD=$${DB_PASSWORD}
+POSTGRES_HOST=${db_endpoint}
+POSTGRES_PORT=5432
+STORAGE_BACKEND=s3
+S3_BUCKET=${s3_bucket}
+AWS_DEFAULT_REGION=${region}
+MAX_UPLOAD_SIZE_MB=${max_upload_size_mb}
+LOG_LEVEL=${log_level}
+EOF
+chmod 600 /opt/csv-analyzer/.env
+
+cat > /opt/csv-analyzer/docker-compose.yml <<EOF
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${region}
+        awslogs-group: ${log_group_name}
+        awslogs-stream: redis
+
+  api:
+    image: ${api_repo_url}:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "80:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${region}
+        awslogs-group: ${log_group_name}
+        awslogs-stream: api
+
+  worker:
+    image: ${worker_repo_url}:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${region}
+        awslogs-group: ${log_group_name}
+        awslogs-stream: worker
+EOF
+
+cd /opt/csv-analyzer
+
+# Premier démarrage : peut échouer si aucune image n'a encore été poussée
+# sur ECR (le pipeline CI/CD n'a pas encore tourné une première fois). Ce
+# n'est pas bloquant pour le boot de l'instance ; le déploiement réel est
+# ensuite déclenché par GitHub Actions via SSH.
+docker compose pull || true
+docker compose up -d || true
