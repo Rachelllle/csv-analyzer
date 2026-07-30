@@ -105,7 +105,7 @@ variable "ecr_image_retention_count" {
 variable "log_retention_days" {
   description = "Durée de rétention des logs CloudWatch, en jours."
   type        = number
-  default     = 30
+  default     = 14
 }
 
 # --- Application (injectées dans le .env généré sur l'EC2) ---
